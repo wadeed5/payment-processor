@@ -13,7 +13,7 @@
 The credit and debit in the Transfer flow are two separate independant db calls that can make the ledger 
 imbalance.
 
-Example: 
+Scenario 1: 
 Client A => balance 100 USD 
 Client B => balance 80 USD
 
@@ -23,6 +23,12 @@ store.Transfer func is executed and Client A wallet is debit by 50 USD
 but the db call to credit client B fails due to any reason (db connnection timeout etc)
 now we have a scenario in which Client A was debit by 50 and Client B was not credit 50 and there is no record of this transaction happening as failed txn was not recorded it ledger (for reconciliation)
 
+Scenario 2: 
+For withdrawal and transfer the balance check is independent from actual db updated which will cause 
+concurrency issue.
+Wallet has 100 USD 
+Two withdrawal for 60 USD comes (load test, duplicate txn scenario)
+Both will read balance as 100 USD and pass the check which would result in account going in negative balance. 
 
 ### Balance being reported inconsistent
 The balance is being reported by cummulating the ledger record (transactions) instead of the balance retrieved from wallet. 
@@ -44,3 +50,11 @@ fails we are not recording a failed transaction in the ledger which would hurt r
 
 ### Publish Completed on NATS before the transaction is record 
 - This majorly contributes to the correctioness of the system as we publish completed on nats before we record a transaction, so in case if the recording of transaction failed we will have gaps in reconcilation data when on NATS the operation has succeeded but there is no record in the transaction ledger.
+
+### lack of Idempotency
+- The system in general is not having any kind of idempotency check neither on NATS level or any unique constraint in DB to ensure idempotency. Due to which the system will always process duplicate request if possible. 
+
+### Lack on any type of validation (request body, account existence)
+- The system lacks any kind of formal validation, there is no request validator that can enforce sanitization of request. The operation lacks check for account existence which can lead to problems like:
+- Same account transfer 
+- Ghost account transfer
