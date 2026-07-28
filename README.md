@@ -7,7 +7,7 @@
 - Txn amount debit from Account A but did not credit to Account B
 - open question: txn retried getting processed twice, needs to be investigated
 
-## Design flaws 
+## System gaps
 
 ### Lack of DB transactions usage is making the system unstable
 The credit and debit in the Transfer flow are two separate independant db calls that can make the ledger 
