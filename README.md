@@ -55,6 +55,7 @@ fails we are not recording a failed transaction in the ledger which would hurt r
 - The system in general is not having any kind of idempotency check neither on NATS level or any unique constraint in DB to ensure idempotency. Due to which the system will always process duplicate request if possible. 
 
 ### Lack on any type of validation (request body, account existence)
-- The system lacks any kind of formal validation, there is no request validator that can enforce sanitization of request. The operation lacks check for account existence which can lead to problems like:
+- The system lacks any kind of formal validation, there is no request validator that can enforce sanitization of request. In case of there is error in unmarshalling there is no publish error which will result in having caller thinking its still processing even though the request has failed.
+ The operation lacks check for account existence which can lead to problems like:
 - Same account transfer 
 - Ghost account transfer

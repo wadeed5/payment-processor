@@ -36,7 +36,7 @@ func (s *Store) GetWalletBalance(walletID string) (float64, string, error) {
 	return balance, currency, err
 }
 
-func (s *Store) RecordTransaction(requestID, operation string, fromWallet, toWallet *string, amount float64, status string) error {
+func (s *Store) recordTransaction(requestID, operation string, fromWallet, toWallet *string, amount float64, status string) error {
 	_, err := s.DB.Exec(
 		`INSERT INTO transactions (request_id, operation, from_wallet, to_wallet, amount, status) VALUES ($1, $2, $3, $4, $5, $6)`,
 		requestID, operation, fromWallet, toWallet, amount, status,
@@ -44,40 +44,90 @@ func (s *Store) RecordTransaction(requestID, operation string, fromWallet, toWal
 	return err
 }
 
-func (s *Store) Deposit(walletID string, amount float64) error {
-	_, err := s.DB.Exec(`
+func (s *Store) Deposit(requestID, walletID string, amount float64) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
 		INSERT INTO wallets (wallet_id, balance)
 		VALUES ($1, $2)
 		ON CONFLICT (wallet_id)
 		DO UPDATE SET balance = wallets.balance + EXCLUDED.balance, updated_at = NOW()
 	`, walletID, amount)
-	return err
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := s.recordTransaction(requestID, "deposit", nil, &walletID, amount, "completed"); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return nil
 }
 
-func (s *Store) Withdraw(walletID string, amount float64) error {
+func (s *Store) Withdraw(requestID, walletID string, amount float64) error {
 	var balance float64
-	if err := s.DB.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, walletID).Scan(&balance); err != nil {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, walletID).Scan(&balance); err != nil {
+		tx.Rollback()
 		return err
 	}
 	if balance < amount {
+		tx.Rollback()
 		return fmt.Errorf("insufficient funds")
 	}
-	_, err := s.DB.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, walletID)
-	return err
+	_, err = tx.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, walletID)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := s.recordTransaction(requestID, "withdraw", &walletID, nil, amount, "completed"); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return nil
 }
 
-func (s *Store) Transfer(fromWallet, toWallet string, amount float64) error {
+func (s *Store) Transfer(requestID, fromWallet, toWallet string, amount float64) error {
 	var balance float64
-	if err := s.DB.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, fromWallet).Scan(&balance); err != nil {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, fromWallet).Scan(&balance); err != nil {
+		tx.Rollback()
 		return err
 	}
 	if balance < amount {
+		tx.Rollback()
 		return fmt.Errorf("insufficient funds")
 	}
-	if _, err := s.DB.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, fromWallet); err != nil {
+	if _, err := tx.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, fromWallet); err != nil {
+		tx.Rollback()
 		return err
 	}
-	if _, err := s.DB.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE wallet_id = $2`, amount, toWallet); err != nil {
+	if _, err := tx.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE wallet_id = $2`, amount, toWallet); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := s.recordTransaction(requestID, "transfer", &fromWallet, &toWallet, amount, "completed"); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
 		return err
 	}
 	return nil
@@ -90,7 +140,7 @@ func (s *Store) SumBalanceFromTransactions(walletID string) (float64, error) {
 			SUM(CASE WHEN to_wallet = $1 THEN amount ELSE 0 END) -
 			SUM(CASE WHEN from_wallet = $1 THEN amount ELSE 0 END),
 		0)
-		FROM transactions WHERE from_wallet = $1 OR to_wallet = $1
+		FROM transactions WHERE from_wallet = $1 OR to_wallet = $1 AND status = 'completed'
 	`, walletID).Scan(&balance)
 	return balance, err
 }
