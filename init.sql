@@ -8,11 +8,12 @@ CREATE TABLE IF NOT EXISTS wallets (
 
 CREATE TABLE IF NOT EXISTS transactions (
     id SERIAL PRIMARY KEY,
-    request_id UUID,
+    request_id UUID NOT NULL,
     operation VARCHAR(20) NOT NULL,
     from_wallet UUID,
     to_wallet UUID,
     amount NUMERIC(18,4) NOT NULL,
     status VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT transactions_request_id_unique UNIQUE (request_id)
 );

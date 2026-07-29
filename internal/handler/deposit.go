@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fundingpips/wallet-service/internal/nats"
@@ -25,6 +26,10 @@ func HandleDeposit(store *storage.Store, nc *nats.Client) natsgo.MsgHandler {
 		}
 
 		if err := store.Deposit(req.RequestID, req.WalletID, req.Amount); err != nil {
+			if errors.Is(err, storage.ErrAlreadyProcessed) {
+				publishCompleted(nc, req.RequestID, "deposit")
+				return
+			}
 			fmt.Println("deposit failed:", err)
 			publishFailed(nc, req.RequestID, "deposit", err.Error())
 			return

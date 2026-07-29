@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fundingpips/wallet-service/internal/nats"
@@ -26,6 +27,10 @@ func HandleTransfer(store *storage.Store, nc *nats.Client) natsgo.MsgHandler {
 		}
 
 		if err := store.Transfer(req.RequestID, req.FromWalletID, req.ToWalletID, req.Amount); err != nil {
+			if errors.Is(err, storage.ErrAlreadyProcessed) {
+				publishCompleted(nc, req.RequestID, "transfer")
+				return
+			}
 			fmt.Println("transfer failed:", err)
 			publishFailed(nc, req.RequestID, "transfer", err.Error())
 			return

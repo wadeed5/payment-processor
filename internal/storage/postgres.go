@@ -2,15 +2,16 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
-	"sync"
 
 	_ "github.com/lib/pq"
 )
 
+var ErrAlreadyProcessed = errors.New("request already processed")
+
 type Store struct {
 	DB *sql.DB
-	mu sync.Mutex
 }
 
 func NewStore(pgURL string) (*Store, error) {
@@ -36,32 +37,47 @@ func (s *Store) GetWalletBalance(walletID string) (float64, string, error) {
 	return balance, currency, err
 }
 
-func (s *Store) recordTransactionWithTx(tx *sql.Tx, requestID, operation string, fromWallet, toWallet *string, amount float64, status string) error {
-	_, err := tx.Exec(
-		`INSERT INTO transactions (request_id, operation, from_wallet, to_wallet, amount, status) VALUES ($1, $2, $3, $4, $5, $6)`,
-		requestID, operation, fromWallet, toWallet, amount, status,
+func tryClaimRequest(tx *sql.Tx, requestID, operation string, fromWallet, toWallet *string, amount float64) error {
+	res, err := tx.Exec(
+		`INSERT INTO transactions (request_id, operation, from_wallet, to_wallet, amount, status)
+		 VALUES ($1, $2, $3, $4, $5, 'completed')
+		 ON CONFLICT (request_id) DO NOTHING`,
+		requestID, operation, fromWallet, toWallet, amount,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrAlreadyProcessed
+	}
+	return nil
 }
 
 func (s *Store) Deposit(requestID, walletID string, amount float64) error {
 	return s.withTransaction(func(tx *sql.Tx) error {
+		if err := tryClaimRequest(tx, requestID, "deposit", nil, &walletID, amount); err != nil {
+			return err
+		}
 		_, err := tx.Exec(`INSERT INTO wallets (wallet_id, balance)
 			VALUES ($1, $2)
 			ON CONFLICT (wallet_id)
 			DO UPDATE SET balance = wallets.balance + EXCLUDED.balance, updated_at = NOW()`,
 			walletID, amount,
 		)
-		if err != nil {
-			return err
-		}
-		return s.recordTransactionWithTx(tx, requestID, "deposit", nil, &walletID, amount, "completed")
+		return err
 	})
 }
 
 func (s *Store) Withdraw(requestID, walletID string, amount float64) error {
 	var balance float64
 	return s.withTransaction(func(tx *sql.Tx) error {
+		if err := tryClaimRequest(tx, requestID, "withdraw", &walletID, nil, amount); err != nil {
+			return err
+		}
 		err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, walletID).Scan(&balance)
 		if err != nil {
 			return err
@@ -70,16 +86,16 @@ func (s *Store) Withdraw(requestID, walletID string, amount float64) error {
 			return fmt.Errorf("insufficient funds")
 		}
 		_, err = tx.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, walletID)
-		if err != nil {
-			return err
-		}
-		return s.recordTransactionWithTx(tx, requestID, "withdraw", &walletID, nil, amount, "completed")
+		return err
 	})
 }
 
 func (s *Store) Transfer(requestID, fromWallet, toWallet string, amount float64) error {
 	var balance float64
 	return s.withTransaction(func(tx *sql.Tx) error {
+		if err := tryClaimRequest(tx, requestID, "transfer", &fromWallet, &toWallet, amount); err != nil {
+			return err
+		}
 		err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, fromWallet).Scan(&balance)
 		if err != nil {
 			return err
@@ -92,22 +108,19 @@ func (s *Store) Transfer(requestID, fromWallet, toWallet string, amount float64)
 			return err
 		}
 		_, err = tx.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE wallet_id = $2`, amount, toWallet)
-		if err != nil {
-			return err
-		}
-		return s.recordTransactionWithTx(tx, requestID, "transfer", &fromWallet, &toWallet, amount, "completed")
+		return err
 	})
 }
 
 func (s *Store) SumBalanceFromTransactions(walletID string) (float64, error) {
 	var balance float64
 	err := s.DB.QueryRow(`
-  SELECT COALESCE(
-   SUM(CASE WHEN to_wallet = $1 THEN amount ELSE 0 END) -
-   SUM(CASE WHEN from_wallet = $1 THEN amount ELSE 0 END),
-  0)
-  FROM transactions WHERE from_wallet = $1 OR to_wallet = $1 AND status = 'completed'
- `, walletID).Scan(&balance)
+		SELECT COALESCE(
+			SUM(CASE WHEN to_wallet = $1 THEN amount ELSE 0 END) -
+			SUM(CASE WHEN from_wallet = $1 THEN amount ELSE 0 END),
+		0)
+		FROM transactions WHERE (from_wallet = $1 OR to_wallet = $1) AND status = 'completed'
+	`, walletID).Scan(&balance)
 	return balance, err
 }
 
