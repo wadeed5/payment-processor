@@ -26,21 +26,15 @@ func HandleBalance(store *storage.Store) natsgo.MsgHandler {
 			return
 		}
 
-		_, currency, err := store.GetWalletBalance(req.WalletID)
+		walletBalance, currency, err := store.GetWalletBalance(req.WalletID)
 		if err != nil {
 			fmt.Println("balance: wallet lookup failed:", err)
 			return
 		}
 
-		balance, err := store.SumBalanceFromTransactions(req.WalletID)
-		if err != nil {
-			fmt.Println("balance: query failed:", err)
-			return
-		}
-
 		resp := BalanceResponse{
 			WalletID: req.WalletID,
-			Balance:  balance,
+			Balance:  walletBalance,
 			Currency: currency,
 		}
 		data, _ := json.Marshal(resp)
