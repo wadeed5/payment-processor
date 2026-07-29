@@ -49,6 +49,9 @@ func (s *Store) Deposit(requestID, walletID string, amount float64) error {
 	if err != nil {
 		return err
 	}
+
+	defer tx.Rollback()
+
 	_, err = tx.Exec(`
 		INSERT INTO wallets (wallet_id, balance)
 		VALUES ($1, $2)
@@ -56,15 +59,12 @@ func (s *Store) Deposit(requestID, walletID string, amount float64) error {
 		DO UPDATE SET balance = wallets.balance + EXCLUDED.balance, updated_at = NOW()
 	`, walletID, amount)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := s.recordTransaction(requestID, "deposit", nil, &walletID, amount, "completed"); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return nil
@@ -76,25 +76,23 @@ func (s *Store) Withdraw(requestID, walletID string, amount float64) error {
 	if err != nil {
 		return err
 	}
+
+	defer tx.Rollback()
+
 	if err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, walletID).Scan(&balance); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if balance < amount {
-		tx.Rollback()
 		return fmt.Errorf("insufficient funds")
 	}
 	_, err = tx.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, walletID)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := s.recordTransaction(requestID, "withdraw", &walletID, nil, amount, "completed"); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return nil
@@ -106,28 +104,24 @@ func (s *Store) Transfer(requestID, fromWallet, toWallet string, amount float64)
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+
 	if err := tx.QueryRow(`SELECT balance FROM wallets WHERE wallet_id = $1`, fromWallet).Scan(&balance); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if balance < amount {
-		tx.Rollback()
 		return fmt.Errorf("insufficient funds")
 	}
 	if _, err := tx.Exec(`UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE wallet_id = $2`, amount, fromWallet); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE wallet_id = $2`, amount, toWallet); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := s.recordTransaction(requestID, "transfer", &fromWallet, &toWallet, amount, "completed"); err != nil {
-		tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return nil
